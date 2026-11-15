@@ -10,12 +10,51 @@ export function quoteList(values: string[]): string {
   return `(${values.map(quote).join(', ')})`;
 }
 
-const ISSUE_KEY_RE = /^[A-Za-z][A-Za-z0-9]+-\d+$/;
+const ISSUE_KEY_RE = /^[A-Za-z][A-Za-z0-9_]*-\d+$/;
 // summary ~ 走 Lucene 解析，特殊字符会导致 JQL 报错，直接替换为空格
 const LUCENE_SPECIAL_RE = /[+\-&|!(){}[\]^"~*?:\\/]/g;
+const ISSUE_NUMBER_RE = /^(?:([A-Za-z][A-Za-z0-9_]*)-)?(\d+)$/;
 
 export function isIssueKey(text: string): boolean {
   return ISSUE_KEY_RE.test(text.trim());
+}
+
+export function issueNumberJql(query: string, project?: string | null): string {
+  const match = ISSUE_NUMBER_RE.exec(query.trim());
+  if (!match) return '';
+  const [, prefix, digits] = match;
+  const scope = (prefix || project || '').toUpperCase();
+  if (!scope || digits.length > 19) return '';
+  // key 不支持 ~；分别覆盖 123、1230–1239、12300–12399…，不能只查最长的区间。
+  const max = 9223372036854775807n;
+  let lower = BigInt(digits), span = 1n;
+  if (!lower || lower > max) return '';
+  const clauses: string[] = [];
+  while (lower <= max) {
+    const upper = lower + span - 1n > max ? max : lower + span - 1n;
+    clauses.push(span === 1n ? `key = ${quote(`${scope}-${lower}`)}` : `(key >= ${quote(`${scope}-${lower}`)} AND key <= ${quote(`${scope}-${upper}`)})`);
+    lower *= 10n; span *= 10n;
+  }
+  return `project = ${quote(scope)} AND (${clauses.join(' OR ')})`;
+}
+
+/** 输入项目前缀加连字符时，直接列出该项目最近更新，不把连字符当标题分词。 */
+export function issueProjectJql(query: string): string {
+  const prefix = /^([A-Za-z][A-Za-z0-9_]*)-$/.exec(query.trim())?.[1];
+  if (!prefix) return '';
+  return `project = ${quote(prefix)} ORDER BY updated DESC`;
+}
+
+/** 快速跳转的标题与编号分支共享项目范围；完整编号仍允许明确指定其他项目。 */
+export function issueSearchJql(query: string, project?: string | null): string {
+  const q = query.trim();
+  const projectJql = issueProjectJql(q);
+  if (projectJql) return projectJql;
+  const number = ISSUE_NUMBER_RE.exec(q);
+  const scope = number?.[1]?.toUpperCase() || project || undefined;
+  const numbered = issueNumberJql(q, scope);
+  const title = buildJql({ project: scope, text: number ? number[2] : q }, '');
+  return `${numbered ? `(${numbered}) OR (${title})` : title} ORDER BY updated DESC`.trim();
 }
 
 export interface IssueFilter {

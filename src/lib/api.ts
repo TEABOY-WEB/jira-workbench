@@ -113,6 +113,9 @@ export interface Me {
   llm?: { enabled: boolean; model: string; maxHoursPerTask: number };
 }
 
+export interface RememberedLogin { available: boolean; username: string; passwordSaved: boolean }
+export interface LoginOptions { rememberAccount: boolean; rememberPassword: boolean; useSavedPassword: boolean }
+
 /** 登录页「连接设置」；Key 不下发明文 */
 export interface ConnSettings {
   jiraBaseUrl: string;
@@ -154,7 +157,9 @@ export const api = {
   createMcpGrant: (input: {name:string;projects:string[];access:'read'|'write';attachmentRoots:string[]}) => request<{grant:McpGrant;token:string;url:string}>('POST', '/api/mcp/grants', input),
   updateMcpGrant: (id:string, input:{enabled?:boolean;rebind?:boolean}) => request<McpStatus>('PUT', `/api/mcp/grants/${enc(id)}`, input),
   revokeMcpGrant: (id:string) => request<McpStatus>('DELETE', `/api/mcp/grants/${enc(id)}`),
-  login: (username: string, password: string) => writeOnce('login', () => request<{ name: string }>('POST', '/api/login', { username, password })),
+  login: (username: string, password: string, options?: LoginOptions) => writeOnce('login', () => request<{ name: string }>('POST', '/api/login', { username, password, ...options })),
+  rememberedLogin: () => request<RememberedLogin>('GET', '/api/login/remembered', undefined, undefined, { feedback: 'local' }),
+  forgetLogin: () => request<{ ok: boolean }>('DELETE', '/api/login/remembered'),
   logout: () => request<{ ok: boolean }>('POST', '/api/logout'),
   me: () => request<Me>('GET', '/api/me'),
   cacheStatus: (project: string, signal?: AbortSignal) => request<{ revision: string }>('GET', `/api/cache/status?${new URLSearchParams({ project })}`, undefined, signal),

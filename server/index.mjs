@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { checkWrite as checkWritePolicy, fileResponseHeaders, isAttachmentUpload, linkDeleteId, ownedTarget, parseFilePath } from './policy.mjs';
 import { configureLlm, llmStatus, splitDaily } from './llm.mjs';
 import { createSessionStore } from './sessionStore.mjs';
+import { createRememberedLoginStore, REMEMBER_SECONDS } from './remembered-login.mjs';
 import { createReadCache, readTtl } from './read-cache.mjs';
 import { createJiraScheduler, readProjects, writeProjects } from './jira-scheduler.mjs';
 import { DEFAULT_JIRA_BASE_URL, DEFAULT_LLM, isLocalRequest, jiraOrDefault, maskKey, parseSettingsInput, readJson, saveSettings } from './settings.mjs';
@@ -57,6 +58,7 @@ const READ_PREFIXES = [
 const sessions = new Map();
 /** 会话落盘（重启免登录）；未配置目录时只在内存 */
 let store = null;
+let rememberedLogin = null;
 let mcp = null;
 const readCache = createReadCache();
 let saveTimer = null;
@@ -205,8 +207,21 @@ async function handleLogin(req, res) {
   } catch {
     return sendError(res, 400, '请求格式错误');
   }
+  if (!creds || typeof creds !== 'object' || Array.isArray(creds)) return sendError(res, 400, '请求格式错误');
   const username = typeof creds?.username === 'string' ? creds.username.trim() : '';
-  const password = typeof creds?.password === 'string' ? creds.password : '';
+  if (['rememberAccount', 'rememberPassword', 'useSavedPassword'].some(key => creds[key] !== undefined && typeof creds[key] !== 'boolean')) return sendError(res, 400, '记住密码参数格式错误');
+  if (creds.rememberPassword && creds.rememberAccount === false) return sendError(res, 400, '记住密码时需要同时记住账号');
+  const usesRememberedLogin = creds.rememberAccount !== undefined || creds.rememberPassword !== undefined || creds.useSavedPassword;
+  if (usesRememberedLogin && !isLocalRequest(req.headers)) return sendError(res, 403, '只允许本机页面使用记住密码');
+  if ((creds.rememberPassword || creds.rememberAccount) && !rememberedLogin) return sendError(res, 400, '本机已关闭登录持久化，无法记住账号密码');
+  const jiraBaseUrl = JIRA_BASE_URL;
+  const token = parseCookieHeader(req.headers.cookie).wb_remember;
+  let password = typeof creds?.password === 'string' ? creds.password : '';
+  if (creds.useSavedPassword && !password) {
+    const saved = rememberedLogin?.get(token, jiraBaseUrl);
+    if (!saved?.password || saved.username !== username) return sendError(res, 400, '已保存密码不可用，请重新输入密码');
+    password = saved.password;
+  }
   if (!username || !password) return sendError(res, 400, '请输入用户名和密码');
 
   const jar = new Map();
@@ -215,19 +230,39 @@ async function handleLogin(req, res) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username, password }),
   });
+  if (JIRA_BASE_URL !== jiraBaseUrl) return sendError(res, 409, 'Jira 地址已更改，请重新登录');
   if (!jr.ok) {
     // Jira 连续失败后会要求验证码，此时只能去原生页面登录一次
     const denied = jr.headers.get('x-authentication-denied-reason');
     const msg = denied ? '登录被 Jira 拒绝（可能需要验证码），请先在 Jira 原生页面登录一次' : '用户名或密码错误';
     return sendError(res, jr.status === 403 ? 403 : 401, msg);
   }
+  const cookies = [];
+  if (creds.rememberPassword === true || creds.rememberAccount === true) {
+    const savedToken = rememberedLogin.save(token, jiraBaseUrl, username, creds.rememberPassword ? password : '');
+    cookies.push(`wb_remember=${savedToken}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${REMEMBER_SECONDS}`);
+  } else if (creds.rememberPassword === false || creds.rememberAccount === false) {
+    rememberedLogin?.forget(token);
+    cookies.push('wb_remember=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');
+  }
   const sid = randomBytes(32).toString('hex');
   sessions.set(sid, { cookies: jar, user: username, lastSeen: Date.now() });
   persistSessions(true);
   sendJson(res, 200, { name: username }, {
     // 带 Max-Age：关掉窗口/重启浏览器后 cookie 仍在；真正的过期由服务端空闲超时和 Jira 会话决定
-    'Set-Cookie': `wb_sid=${sid}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${COOKIE_MAX_AGE_S}`,
+    'Set-Cookie': [`wb_sid=${sid}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${COOKIE_MAX_AGE_S}`, ...cookies],
   });
+}
+
+function handleRememberedLogin(req, res) {
+  if (!isLocalRequest(req.headers) || req.headers['sec-fetch-site'] === 'cross-site') return sendError(res, 403, '只允许本机页面访问已保存的登录');
+  const token = parseCookieHeader(req.headers.cookie).wb_remember;
+  if (req.method === 'DELETE') {
+    rememberedLogin?.forget(token);
+    return sendJson(res, 200, { ok: true }, { 'Set-Cookie': 'wb_remember=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0' });
+  }
+  const saved = rememberedLogin?.get(token, JIRA_BASE_URL);
+  sendJson(res, 200, { available: !!rememberedLogin, username: saved?.username || '', passwordSaved: !!saved?.password });
 }
 
 async function handleMe(req, res) {
@@ -492,6 +527,7 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/mcp') return await mcp.handle(req, res);
     if (url.pathname.startsWith('/api/mcp/')) return await mcp.manage(req, res, url, getSession(req));
     if (url.pathname === '/api/login' && req.method === 'POST') return await handleLogin(req, res);
+    if (url.pathname === '/api/login/remembered' && ['GET', 'DELETE'].includes(req.method)) return handleRememberedLogin(req, res);
     if (url.pathname === '/api/logout' && req.method === 'POST') return await handleLogout(req, res);
     if (url.pathname === '/api/cache/status' && req.method === 'GET') {
       if (!getSession(req)) return sendError(res, 401, '未登录');
@@ -537,6 +573,7 @@ export async function startServer(opts) {
   readCache.clear();
   cacheRevision++; allProjectsRevision = cacheRevision; projectRevisions.clear();
   store = opts.sessionDir ? createSessionStore(opts.sessionDir) : null;
+  rememberedLogin = opts.sessionDir ? createRememberedLoginStore(path.join(opts.sessionDir, 'remembered-login')) : null;
   if (store) for (const [sid, s] of store.load(SESSION_IDLE_MS)) sessions.set(sid, s);
   await mcp?.close();
   mcp = createMcpFeature({

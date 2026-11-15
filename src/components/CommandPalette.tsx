@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
-import { api } from '../lib/api';
-import { buildJql, isIssueKey } from '../lib/jql';
+import { isIssueKey } from '../lib/jql';
+import { searchIssueSuggestions, type IssueSuggestions } from '../lib/issueSuggestions';
+import { useSession } from '../lib/session';
 import { loadRecent, type RecentIssue } from '../lib/recent';
 import type { Project } from '../lib/types';
 import { StatusPill, TypeBadge } from './Badges';
@@ -19,47 +20,42 @@ type Item =
   | { kind: 'issue'; key: string; summary: string; type: string; status: string }
   | { kind: 'project'; key: string; name: string };
 
-const FIELDS = ['summary', 'status', 'issuetype'];
-
-/** ⌘K / Ctrl+K 跳转：输入编号直接打开，关键字跨项目搜标题，也能跳项目 */
+/** ⌘K / Ctrl+K 跳转：在当前项目搜索，完整编号可跨项目直接打开。 */
 export function CommandPalette({ projects, currentProject, onOpenIssue, onOpenProject, onClose }: Props) {
+  const { me } = useSession();
+  const namespace = `${me.jiraBaseUrl}:${me.name}`;
   const [text, setText] = useState('');
-  const [found, setFound] = useState<Item[]>([]);
-  const [state, setState] = useState<'' | 'loading' | string>('');
+  const [result, setResult] = useState<(IssueSuggestions & { query: string; project: string | null }) | null>(null);
   const [active, setActive] = useState(0);
   const listId = useId();
   const recent = useMemo<RecentIssue[]>(() => loadRecent(), []);
   const q = text.trim();
+  const ready = result?.query === q && result.project === currentProject;
+  const found: Item[] = useMemo(() => ready ? result.issues.map(i => ({ kind: 'issue', key: i.key, summary: i.fields.summary, type: i.fields.issuetype.name, status: i.fields.status.name })) : [], [ready, result]);
   const listRef = useRef<HTMLUListElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
   useDialogFocus(dialogRef, onClose);
 
   useEffect(() => {
     if (!q) {
-      setFound([]);
-      setState('');
+      setResult(null);
       return;
     }
     let alive = true;
     const ctrl = new AbortController();
     const t = setTimeout(() => {
-      setState('loading');
-      const jql = isIssueKey(q) ? buildJql({ text: q }, '') : buildJql({ project: currentProject ?? undefined, text: q }, 'updated DESC');
-      api.search(jql, { maxResults: 15, fields: FIELDS }, ctrl.signal).then(
-        (r) => {
-          if (!alive) return;
-          setFound(r.issues.map((i) => ({ kind: 'issue', key: i.key, summary: i.fields.summary, type: i.fields.issuetype.name, status: i.fields.status.name })));
-          setState('');
-        },
-        (e: Error) => alive && setState(e.message),
-      );
+      searchIssueSuggestions(q, currentProject, namespace, ctrl.signal, value => {
+        if (alive) setResult({ ...value, query: q, project: currentProject });
+      }).catch((error: Error) => {
+        if (alive) setResult({ query: q, project: currentProject, issues: [], loading: false, error: error.message });
+      });
     }, 220);
     return () => {
       alive = false;
       ctrl.abort();
       clearTimeout(t);
     };
-  }, [q, currentProject]);
+  }, [q, currentProject, namespace]);
 
   const items: Item[] = useMemo(() => {
     if (!q) return recent.map((r) => ({ kind: 'issue' as const, ...r }));
@@ -68,13 +64,10 @@ export function CommandPalette({ projects, currentProject, onOpenIssue, onOpenPr
       .filter((p) => p.key.toLowerCase().includes(lower) || p.name.toLowerCase().includes(lower))
       .slice(0, 4)
       .map((p) => ({ kind: 'project' as const, key: p.key, name: p.name }));
-    return [...projs, ...found];
+    return isIssueKey(q) || /^\d+$/.test(q) ? [...found, ...projs] : [...projs, ...found];
   }, [q, recent, projects, found]);
 
-  useEffect(() => setActive(0), [items]);
-  useEffect(() => {
-    listRef.current?.querySelector(`[data-idx="${active}"]`)?.scrollIntoView({ block: 'nearest' });
-  }, [active]);
+  useEffect(() => setActive(0), [q, currentProject]);
 
   const choose = (it: Item | undefined) => {
     if (it?.kind === 'project') onOpenProject(it.key);
@@ -94,16 +87,19 @@ export function CommandPalette({ projects, currentProject, onOpenIssue, onOpenPr
           aria-expanded={items.length > 0}
           aria-controls={listId}
           aria-activedescendant={items[active] ? `${listId}-${active}` : undefined}
-          placeholder={currentProject ? `输入编号直接打开，搜索 ${currentProject} 的标题，或输入项目名切换` : '输入编号直接打开，或搜索标题 / 项目'}
+          placeholder={currentProject ? `搜索 ${currentProject} 的编号、尾号或标题，也可输入项目名切换` : '搜索问题编号、尾号或标题，完整编号可直接打开'}
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          maxLength={160}
+          onChange={(e) => { setText(e.target.value); setActive(0); }}
           onKeyDown={(e) => {
             if (e.key === 'ArrowDown') {
               e.preventDefault();
-              setActive((a) => Math.min(a + 1, items.length - 1));
+              const next = Math.max(0, Math.min(active + 1, items.length - 1));
+              setActive(next); listRef.current?.querySelector(`[data-idx="${next}"]`)?.scrollIntoView({ block: 'nearest' });
             } else if (e.key === 'ArrowUp') {
               e.preventDefault();
-              setActive((a) => Math.max(a - 1, 0));
+              const next = Math.max(active - 1, 0);
+              setActive(next); listRef.current?.querySelector(`[data-idx="${next}"]`)?.scrollIntoView({ block: 'nearest' });
             } else if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
               e.preventDefault();
               choose(items[active]);
@@ -145,9 +141,10 @@ export function CommandPalette({ projects, currentProject, onOpenIssue, onOpenPr
               )}
             </li>
           ))}
-          {q && state === 'loading' && !found.length && <li className="palette-head">搜索中…</li>}
-          {q && state && state !== 'loading' && <li className="palette-head err">{state}</li>}
-          {q && !state && !items.length && (
+          {q && !ready && <li className="palette-head" role="status">搜索中…{isIssueKey(q) ? `回车可直接打开 ${q.toUpperCase()}` : ''}</li>}
+          {q && ready && result.note && <li className="palette-head" role="status">{result.note}</li>}
+          {q && ready && result.error && <li className="palette-head err" role="alert">{result.error}</li>}
+          {q && ready && !result.loading && !result.error && !items.length && (
             <li className="palette-head">{isIssueKey(q) ? `回车直接打开 ${q.toUpperCase()}` : '没有匹配的问题'}</li>
           )}
         </ul>

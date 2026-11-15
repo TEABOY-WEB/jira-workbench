@@ -1,5 +1,5 @@
-import { useEffect, useState, type FormEvent } from 'react';
-import { api, ApiError, type ConnSettings } from '../lib/api';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { api, ApiError, type ConnSettings, type RememberedLogin } from '../lib/api';
 import { OrbitScene } from '../features/scene/OrbitScene';
 import { SceneSettings } from '../features/scene/SceneSettings';
 
@@ -8,6 +8,12 @@ export function Login({ onDone }: { onDone: () => void }) {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const pending = useRef(false);
+  const edited = useRef(false);
+  const [saved, setSaved] = useState<RememberedLogin | null>(null);
+  const [rememberCredentials, setRememberCredentials] = useState(false);
+  const [rememberReady, setRememberReady] = useState(false);
+  const [rememberNotice, setRememberNotice] = useState('');
   const [settings, setSettings] = useState<ConnSettings | null>(null);
   const [showSettings, setShowSettings] = useState(false);
 
@@ -18,18 +24,52 @@ export function Login({ onDone }: { onDone: () => void }) {
     }, () => setSettings(null));
   }, []);
 
+  useEffect(() => {
+    if (!settings) return;
+    let alive = true;
+    edited.current = false;
+    setSaved(null); setUsername(''); setPassword(''); setRememberCredentials(false);
+    setRememberReady(false); setRememberNotice('');
+    api.rememberedLogin().then(value => {
+      if (!alive) return;
+      setSaved(value);
+      if (!edited.current) {
+        setUsername(value.username); setRememberCredentials(value.passwordSaved);
+      }
+      if (!value.available) setRememberNotice('本机已关闭登录持久化，仍可输入账号密码登录');
+    }, error => { if (alive) setRememberNotice(`无法读取已保存登录：${error.message}`); }).finally(() => { if (alive) setRememberReady(true); });
+    return () => { alive = false; };
+  }, [settings?.jiraBaseUrl]);
+
+  const canUseSaved = !!saved?.passwordSaved && username.trim() === saved.username;
+
+  async function forget() {
+    if (pending.current) return;
+    pending.current = true; setBusy(true); setError('');
+    try {
+      await api.forgetLogin();
+      setSaved(value => value ? { ...value, username: '', passwordSaved: false } : value);
+      setUsername(''); setPassword(''); setRememberCredentials(false);
+      setRememberNotice('已清除本机保存的账号和密码');
+    } catch (error) { setError(`清除失败：${(error as Error).message}`); }
+    finally { pending.current = false; setBusy(false); }
+  }
+
   async function submit(e: FormEvent) {
     e.preventDefault();
+    if (pending.current) return;
+    pending.current = true;
     setBusy(true);
     setError('');
     try {
-      await api.login(username, password);
+      await api.login(username, password, saved?.available ? { rememberAccount: rememberCredentials, rememberPassword: rememberCredentials, useSavedPassword: canUseSaved && !password } : undefined);
       onDone();
     } catch (err) {
       if (!(err instanceof ApiError)) setError('无法连接本地代理，请确认 npm run dev 已启动');
       // 5xx 多半是 Jira 地址不通
       else setError(err.status >= 500 ? `${err.message}。请检查「连接设置」里的 Jira 地址` : err.message);
     } finally {
+      pending.current = false;
       setBusy(false);
     }
   }
@@ -37,25 +77,35 @@ export function Login({ onDone }: { onDone: () => void }) {
   return (
     <div className="login-wrap"><OrbitScene><div className="login-scene-copy"><span>WORK IN FLOW</span><strong>需求、任务与工时<br/>在同一条轨道上。</strong></div></OrbitScene>
       <div className="login-stack">
-        <form className="login" onSubmit={submit}>
+        <form className="login" aria-label="Jira 登录" onSubmit={submit}>
           <h1>研发工作台</h1>
           <p>使用 Jira 账号登录，权限与 Jira 一致</p>
           <label>
             用户名
-            <input className="input" autoComplete="username" value={username} onChange={(e) => setUsername(e.target.value)} required />
+            <input className="input" name="username" autoComplete="username" value={username} disabled={busy} onChange={(e) => { edited.current = true; setUsername(e.target.value); }} required />
           </label>
           <label>
             密码
             <input
               className="input"
               type="password"
+              name="password"
               autoComplete="current-password"
+              placeholder={canUseSaved ? '已保存密码，留空即可使用；输入可更新' : '请输入 Jira 密码'}
+              aria-describedby="login-password-help"
+              disabled={busy}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              required
+              required={!canUseSaved}
             />
           </label>
-          <button className="btn primary" disabled={busy || !settings?.jiraBaseUrl}>
+          <div className="login-remember">
+            <label><input type="checkbox" checked={rememberCredentials} disabled={busy || !saved?.available} onChange={event => { edited.current = true; setRememberCredentials(event.target.checked); }}/>记住帐号密码</label>
+            {!!saved?.username && <button type="button" className="link-btn" disabled={busy} onClick={forget}>清除保存</button>}
+          </div>
+          <p className="login-password-help" id="login-password-help">{canUseSaved ? '已保存密码可直接登录；修改账号后需重新输入密码。' : '仅在本机加密保存，登录成功后生效，有效期 90 天。'}</p>
+          {rememberNotice && <div className="login-remember-notice" role="status">{rememberNotice}</div>}
+          <button className="btn primary" disabled={busy || !settings?.jiraBaseUrl || !rememberReady}>
             {busy ? '登录中…' : '登录'}
           </button>
           <div className="err" role="alert">
