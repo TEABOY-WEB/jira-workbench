@@ -75,11 +75,8 @@ function fetchNode(os, arch) {
   const inner = os === 'win' ? `${base}/node.exe` : `${base}/bin/node`;
   const outFile = path.join(CACHE, inner);
   if (!existsSync(outFile) || !existsSync(path.join(CACHE, base, 'LICENSE'))) {
-    if (os === 'win' && process.platform === 'win32') {
-      run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'Expand-Archive -LiteralPath $env:WB_ARCHIVE -DestinationPath $env:WB_DEST -Force'], {
-        env: { ...process.env, WB_ARCHIVE: file, WB_DEST: CACHE },
-      });
-    } else if (os === 'win') run('unzip', ['-oq', file, '-d', CACHE]);
+    // Windows 10/11 自带 bsdtar。Expand-Archive 在部分 runner 的 .NET 环境中无法解压。
+    if (os === 'win') run('tar', ['-xf', file, '-C', CACHE, inner, `${base}/LICENSE`]);
     else run('tar', ['-xf', file, '-C', CACHE, inner, `${base}/LICENSE`]);
   }
   cpSync(path.join(CACHE, base, 'LICENSE'), path.join(path.dirname(outFile), 'NODE-LICENSE.txt'));
