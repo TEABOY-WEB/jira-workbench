@@ -22,7 +22,7 @@ type Item =
 
 /** ⌘K / Ctrl+K 跳转：在当前项目搜索，完整编号可跨项目直接打开。 */
 export function CommandPalette({ projects, currentProject, onOpenIssue, onOpenProject, onClose }: Props) {
-  const { me } = useSession();
+  const { me, version } = useSession();
   const namespace = `${me.jiraBaseUrl}:${me.name}`;
   const [text, setText] = useState('');
   const [result, setResult] = useState<(IssueSuggestions & { query: string; project: string | null }) | null>(null);
@@ -55,7 +55,7 @@ export function CommandPalette({ projects, currentProject, onOpenIssue, onOpenPr
       ctrl.abort();
       clearTimeout(t);
     };
-  }, [q, currentProject, namespace]);
+  }, [q, currentProject, namespace, version]);
 
   const items: Item[] = useMemo(() => {
     if (!q) return recent.map((r) => ({ kind: 'issue' as const, ...r }));
@@ -87,7 +87,7 @@ export function CommandPalette({ projects, currentProject, onOpenIssue, onOpenPr
           aria-expanded={items.length > 0}
           aria-controls={listId}
           aria-activedescendant={items[active] ? `${listId}-${active}` : undefined}
-          placeholder={currentProject ? `搜索 ${currentProject} 的编号、尾号或标题，也可输入项目名切换` : '搜索问题编号、尾号或标题，完整编号可直接打开'}
+          placeholder={currentProject ? `搜索 ${currentProject} 的编号或标题片段，也可输入项目名切换` : '搜索编号或标题片段，完整编号可直接打开'}
           value={text}
           maxLength={160}
           onChange={(e) => { setText(e.target.value); setActive(0); }}
