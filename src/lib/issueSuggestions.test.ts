@@ -8,31 +8,32 @@ const page = (keys: string[], total = keys.length) => ({ issues: keys.map(issue)
 afterEach(() => vi.restoreAllMocks());
 
 describe('快速跳转候选', () => {
-  it('精确编号即使很久未更新也优先保留，并补充前缀和编号包含匹配', async () => {
+  it('26966 不发送编号区间或 key in，直接从索引返回完整问题', async () => {
     const search = vi.spyOn(api, 'search')
-      .mockResolvedValueOnce(page(['AA-123']))
-      .mockResolvedValueOnce(page(['AA-1234', 'AA-3']))
-      .mockResolvedValueOnce(page(['AA-123', 'AA-1123', 'AA-1234', 'AA-3']))
-      .mockResolvedValueOnce(page(['AA-1123']));
+      .mockResolvedValueOnce(page(['YLZHXT-26966']))
+      .mockResolvedValueOnce(page(['YLZHXT-26966标题']))
+      .mockResolvedValueOnce(page(['YLZHXT-269660', 'YLZHXT-126966', 'YLZHXT-3']));
     const updates: IssueSuggestions[] = [];
-    await searchIssueSuggestions('123', 'AA', 'suffix-test', new AbortController().signal, value => updates.push(value));
-    expect(updates[0].issues.map(i => i.key)).toEqual(['AA-123']);
-    expect(updates.at(-1)?.issues.map(i => i.key)).toEqual(['AA-123', 'AA-1234', 'AA-1123', 'AA-3']);
-    expect(search.mock.calls[1][0]).toContain('OR (project = "AA" AND summary ~ "123")');
-    expect(search.mock.calls[2][1].fields).toEqual(['key']);
+    await searchIssueSuggestions('26966', 'YLZHXT', 'number-test', new AbortController().signal, value => updates.push(value));
+    expect(updates.at(-1)?.issues.map(i => i.key)).toEqual(['YLZHXT-26966', 'YLZHXT-26966标题', 'YLZHXT-269660', 'YLZHXT-126966']);
+    expect(search).toHaveBeenCalledTimes(3);
+    expect(search.mock.calls.every(([jql]) => !/key\s*(?:>=|<=|in\b)/.test(jql))).toBe(true);
+    expect(search.mock.calls[1][0]).toBe('project = "YLZHXT" AND summary ~ "26966" ORDER BY updated DESC');
+    expect(search.mock.calls[2][1].fields).toEqual(['summary', 'status', 'issuetype']);
     expect(search.mock.calls[2][1].background).toBe(true);
-    search.mockResolvedValueOnce(page(['AA-123'])).mockResolvedValueOnce(page(['AA-1234'])).mockResolvedValueOnce(page(['AA-1123']));
-    await searchIssueSuggestions('123', 'AA', 'suffix-test', new AbortController().signal, () => {});
-    expect(search.mock.calls.filter(([, opts]) => opts.fields[0] === 'key')).toHaveLength(1);
+    search.mockResolvedValueOnce(page([])).mockResolvedValueOnce(page([]));
+    await searchIssueSuggestions('26966', 'YLZHXT', 'number-test', new AbortController().signal, () => {});
+    expect(search).toHaveBeenCalledTimes(5);
   });
 
-  it('不存在的完整编号仍可查询前缀', async () => {
-    const search = vi.spyOn(api, 'search').mockRejectedValueOnce(new ApiError(400, 'issue does not exist')).mockResolvedValueOnce(page(['BB-123']));
+  it('不存在的完整编号仍可直接打开，不重复请求或展示 Jira 错误', async () => {
+    const search = vi.spyOn(api, 'search').mockRejectedValue(new ApiError(400, 'issue does not exist'));
     const values: IssueSuggestions[] = [];
-    await searchIssueSuggestions('BB-12', 'AA', 'prefix-test', new AbortController().signal, value => values.push(value));
-    expect(values.at(-1)?.issues[0].key).toBe('BB-123');
-    expect(search.mock.calls[1][0]).not.toContain('project = "AA"');
-    expect(search).toHaveBeenCalledTimes(2);
+    await searchIssueSuggestions('BB-123', 'AA', 'missing-key-test', new AbortController().signal, value => values.push(value));
+    expect(values.at(-1)?.issues).toEqual([]);
+    expect(values.at(-1)?.error).toBeUndefined();
+    expect(search.mock.calls[0][0]).toBe('key = "BB-123" ORDER BY updated DESC');
+    expect(search).toHaveBeenCalledTimes(1);
   });
 
   it('标题匹配连续中文片段、忽略英文字母大小写，空格分隔词需同时命中', () => {
@@ -131,6 +132,6 @@ describe('快速跳转候选', () => {
       search.mockResolvedValueOnce(page([])).mockResolvedValueOnce(page([])).mockResolvedValueOnce(page([]));
       await searchIssueSuggestions('123', 'AA', name, new AbortController().signal, () => {});
     }
-    expect(search.mock.calls.filter(([, opts]) => opts.fields[0] === 'key')).toHaveLength(2);
+    expect(search.mock.calls.filter(([jql]) => /project = "AA" ORDER/.test(jql))).toHaveLength(2);
   });
 });
