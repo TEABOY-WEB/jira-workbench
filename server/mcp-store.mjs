@@ -51,6 +51,7 @@ export function createMcpStore(dir) {
     authenticate(token) { return getBody('SELECT body FROM grants WHERE hash=?', digest(token)); },
     updateGrant(g) { db.prepare('UPDATE grants SET body=? WHERE id=?').run(JSON.stringify(g), g.id); },
     operation: (id) => getBody('SELECT body FROM operations WHERE id=?', id),
+    findOperation: (grantId, requestId) => getBody('SELECT body FROM operations WHERE grant_id=? AND request_id=?', grantId, requestId),
     operations: (grantId) => db.prepare('SELECT body FROM operations WHERE grant_id=? ORDER BY rowid DESC LIMIT 100').all(grantId).map(r => JSON.parse(r.body)),
     begin(grantId, requestId, tool, input) {
       const old = getBody('SELECT body FROM operations WHERE grant_id=? AND request_id=?', grantId, requestId);

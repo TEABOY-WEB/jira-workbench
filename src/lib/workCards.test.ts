@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cardFromLegacy, cardPreviewCount, cardSummary, defaultCards, needsProjectIssues, newCard, selectCardIssues, validCards } from './workCards';
+import { cardFromLegacy, cardPreviewCount, cardSummary, defaultCards, isListCard, needsProjectIssues, newCard, newCreateCard, selectCardIssues, validCards } from './workCards';
 import type { Issue } from './types';
 const hf = { estimate: [], devDone: [], devStart: [] };
 const issue = (key: string, fields: Record<string, unknown> = {}): Issue => ({ id: key, key, fields: {
@@ -21,6 +21,13 @@ describe('工作台卡片', () => {
     expect(validCards([cards[0], cards[0]])).toBe(false);
     expect(validCards([{ ...cards[0], limit: 10000 }])).toBe(false);
     expect(validCards([])).toBe(true);
+  });
+  it('快捷操作是独立卡片，支持本机尺寸与隐藏，不能误作清单发起查询', () => {
+    const card = { ...newCreateCard(), height: 200, hidden: true };
+    expect(validCards([card])).toBe(true); expect(isListCard(card)).toBe(false); expect(needsProjectIssues([card])).toBe(false);
+    expect(validCards([{ ...card, action: 'unknown' }])).toBe(false);
+    expect(validCards([{ ...card, width: 9 }])).toBe(false);
+    expect(validCards([{ ...newCard(), kind: 'unknown' }])).toBe(false);
   });
   it('按 Jira 账号判断经办、开发、测试关系，所有人需要扩大查询范围', () => {
     const dev = issue('A-1');

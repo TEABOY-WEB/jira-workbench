@@ -1,10 +1,11 @@
 import { useState } from 'react';
-import { api, type Transition } from '../lib/api';
+import { PolicyEditor } from '../components/PolicyEditor';
+import { api } from '../lib/api';
 import { useAsync } from '../lib/useAsync';
 import { useSession } from '../lib/session';
 import { copyText } from '../lib/clipboard';
 import { Loading, ErrorState } from '../components/States';
-import type { McpGrant, McpPolicy, McpStatus } from '../lib/mcpTypes';
+import type { McpGrant } from '../lib/mcpTypes';
 
 type Tab = 'connect' | 'grants' | 'policies' | 'history';
 const TABS: Record<Tab, string> = { connect: '服务与连接', grants: 'Agent 授权', policies: '自动完成规则', history: '执行记录' };
@@ -82,49 +83,11 @@ export function McpView() {
           {status.grants.map(g=><div className="mcp-grant" key={g.id}><div><strong>{g.name}</strong><p>{g.projects.join('、')} · {g.access==='write'?'可写入':'只读'} · {g.revoked?'已撤销':!g.enabled?'已停用':g.connected?'登录有效':'需重新绑定'}</p></div><div className="check-group">{!g.revoked&&<><button className="btn small" disabled={busy} onClick={()=>action(()=>api.updateMcpGrant(g.id,{rebind:true}))}>绑定当前登录</button><button className="btn small" disabled={busy} onClick={()=>action(()=>api.updateMcpGrant(g.id,{enabled:!g.enabled}))}>{g.enabled?'停用':'启用'}</button><button className="btn small ghost" disabled={busy} onClick={()=>action(()=>api.revokeMcpGrant(g.id))}>撤销</button></>}</div></div>)}
         </section>
       </>}
-      {tab==='policies'&&<PolicyEditor status={status} busy={busy} save={p=>action(()=>api.saveMcpSettings({enabled:status.enabled,policies:p}))} onError={setError}/>}
+      {tab==='policies'&&<PolicyEditor policies={status.policies} busy={busy} save={p=>action(()=>api.saveMcpSettings({enabled:status.enabled,policies:p}))} onError={setError}/>}
       {tab==='history'&&<section className="mcp-card"><div className="mcp-section-head"><div><h3>执行记录</h3><p className="muted">查看已创建的问题与失败步骤。Agent 使用 jira_get_operation 查询详情、jira_resume_operation 补齐字段后继续。</p></div><button className="btn small" onClick={data.reload}>刷新记录</button></div>
         {!status.operations.length&&<p className="muted">暂无操作记录。</p>}
         {status.operations.map(op=><div key={op.id} className="mcp-operation"><div className="mcp-section-head"><div><strong>{op.agentName}</strong> <code>{op.tool}</code><p className="muted">{new Date(op.createdAt).toLocaleString()} · {STATE[op.state]??op.state}</p></div><button className="btn small" onClick={()=>setDetail(detail===op.id?null:op.id)}>{detail===op.id?'收起':'查看结果'}</button></div>{detail===op.id&&<pre className="mcp-code">{JSON.stringify({operationId:op.id,result:op.result,entries:op.results,error:op.error},null,2)}</pre>}</div>)}
       </section>}
     </div>
   );
-}
-
-function PolicyEditor({status,busy,save,onError}:{status:McpStatus;busy:boolean;save:(p:McpPolicy[])=>void;onError:(s:string)=>void}) {
-  const [sample,setSample]=useState('');
-  const [loaded,setLoaded]=useState<{projectKey:string;typeName:string;from:string;transitions:Transition[]}|null>(null);
-  const [loading,setLoading]=useState(false);
-  const [policy,setPolicy]=useState<McpPolicy>({id:'daily-complete',projectKey:'',typeName:'',targetStatus:'',requireResolution:false,steps:[]});
-  const [transition,setTransition]=useState('');
-  const [stepFields,setStepFields]=useState('{}');
-  async function load() {
-    setLoading(true);onError('');
-    try {
-      const k=sample.trim().toUpperCase(),[issue,transitions]=await Promise.all([api.issue(k),api.transitions(k)]);
-      if(policy.steps.length && (policy.projectKey!==k.split('-')[0] || policy.typeName!==issue.fields.issuetype.name))throw new Error('路线已有步骤，请使用同一项目、同一类型的示例问题');
-      setLoaded({projectKey:k.split('-')[0],typeName:issue.fields.issuetype.name,from:issue.fields.status.name,transitions});setTransition(transitions[0]?.id??'');
-      setPolicy(p=>({...p,projectKey:k.split('-')[0],typeName:issue.fields.issuetype.name}));
-    }catch(e){onError((e as Error).message);}finally{setLoading(false);}
-  }
-  function add() {
-    const t=loaded?.transitions.find(t=>t.id===transition);if(!t||!loaded)return;
-    try {
-      const raw=JSON.parse(stepFields);
-      if(!raw||Array.isArray(raw)||typeof raw!=='object'||Object.values(raw).some(v=>typeof v!=='string'&&!(Array.isArray(v)&&v.every(x=>typeof x==='string'))))throw new Error('字段必须是“字段 ID: 字符串或字符串数组”的 JSON 对象');
-      setPolicy(p=>({...p,targetStatus:t.to.name,steps:[...p.steps.filter(s=>s.from!==loaded.from),{from:loaded.from,transitionId:t.id,to:t.to.name,fields:raw}]}));
-    }catch(e){onError((e as Error).message);}
-  }
-  return <>
-    <section className="mcp-card"><h3>配置自动完成路线</h3><p className="muted">使用现有问题读取当前允许的流转，只查询、不修改该问题。每个起始状态添加一步，直到目标状态；只有已完成的实际工作才应授权自动流转。</p>
-      <div className="check-group"><input className="input" aria-label="示例问题编号" placeholder="示例问题，如 AGENT-123" value={sample} onChange={e=>setSample(e.target.value)}/><button className="btn" disabled={loading||!sample.trim()} onClick={load}>{loading?'读取中…':'读取可用流转'}</button></div>
-      {loaded&&<div className="mcp-policy-builder"><p>{loaded.projectKey} · {loaded.typeName} · 当前状态：<strong>{loaded.from}</strong></p><select className="select" aria-label="策略流转" value={transition} onChange={e=>setTransition(e.target.value)}>{loaded.transitions.map(t=><option key={t.id} value={t.id}>{t.name} → {t.to.name}（{t.id}）</option>)}</select><p className="muted">可选补充字段：按字段 ID 填表单值，例如解决结果填写选项 ID。开发日期可使用日报日期。</p><textarea className="input textarea mono" aria-label="流转补充字段" rows={3} value={stepFields} onChange={e=>setStepFields(e.target.value)}/>{loaded.transitions.find(t=>t.id===transition)?.fields&&<details><summary>查看此流转字段与选项</summary><pre className="mcp-code">{JSON.stringify(loaded.transitions.find(t=>t.id===transition)?.fields,null,2)}</pre></details>}<button className="btn" disabled={!transition} onClick={add}>添加此步到路线</button></div>}
-      <div className="form-grid mcp-policy-fields"><label className="field"><span>策略 ID（供 Agent 调用）</span><input className="input" value={policy.id} onChange={e=>setPolicy(p=>({...p,id:e.target.value}))}/></label><label className="field"><span>目标状态（精确名称）</span><input className="input" value={policy.targetStatus} onChange={e=>setPolicy(p=>({...p,targetStatus:e.target.value}))}/></label></div>
-      <p className="muted">适用：{policy.projectKey||'待选择'} / {policy.typeName||'待选择'}。新增路线时请使用同一项目、同一类型的问题。</p>
-      {policy.steps.map(s=><div className="mcp-route-step" key={s.from}><span>{s.from} <b>→</b> {s.to} <small>流转 {s.transitionId}</small></span><button className="btn small ghost" onClick={()=>setPolicy(p=>({...p,steps:p.steps.filter(x=>x.from!==s.from)}))}>移除</button></div>)}
-      <label className="mcp-policy-check"><input type="checkbox" checked={policy.requireResolution} onChange={e=>setPolicy(p=>({...p,requireResolution:e.target.checked}))}/>到达目标时必须存在解决结果</label>
-      <button className="btn primary" disabled={busy||!policy.id.trim()||!policy.projectKey||!policy.targetStatus.trim()||!policy.steps.length} onClick={()=>save([...status.policies.filter(p=>p.id!==policy.id),policy])}>保存完成策略</button>
-    </section>
-    <section className="mcp-card"><h3>已配置策略</h3>{!status.policies.length&&<p className="muted">尚无自动完成策略。Agent 仍可新建任务或执行单步流转。</p>}{status.policies.map(p=><div className="mcp-grant" key={p.id}><div><strong>{p.id}</strong><p>{p.projectKey} · {p.typeName} → {p.targetStatus} · {p.steps.length} 步</p></div><div className="check-group"><button className="btn small" onClick={()=>setPolicy(p)}>编辑</button><button className="btn small ghost" disabled={busy} onClick={()=>save(status.policies.filter(x=>x.id!==p.id))}>移除</button></div></div>)}</section>
-  </>;
 }

@@ -315,7 +315,7 @@ function Workspace({ onLogout }: { onLogout: () => void }) {
           {route.page === 'hours' && <HoursWorkspace key={pk ?? '*'} projectKey={pk} onOpen={openIssue} tab={route.tab === 'review' ? 'review' : 'report'} onTabChange={tab => go({ tab: tab === 'review' ? 'review' : null })} />}
           {route.page === 'versions' && pk && <VersionView key={pk} projectKey={pk} onOpen={openIssue}/>}
           {route.page === 'notifications' && <NotificationsView projectKey={pk} onOpen={openIssue} onMcp={()=>go({page:'mcp',issue:null})}/>}
-          {route.page === 'me' && <MyWorkView projectKey={pk} onOpen={openIssue} cardId={route.card ?? null} onCardChange={changeCard} />}
+          {route.page === 'me' && <MyWorkView projectKey={pk} onOpen={openIssue} onCreate={setCreating} cardId={route.card ?? null} onCardChange={changeCard} />}
           {projectPage && pk && project.error && <ErrorState error={project.error} onRetry={project.reload} />}
           {projectPage && pk && !project.error && !project.data && <Loading />}
           {projectPage && pk && project.data && (route.page === 'tree' || route.page === 'flat') && (
@@ -361,6 +361,7 @@ function Workspace({ onLogout }: { onLogout: () => void }) {
       {creating && (
         <CreateDialog
           target={creating}
+          onOpenIssue={openIssue}
           onClose={() => setCreating(null)}
           onCreated={() => bump()}
         />

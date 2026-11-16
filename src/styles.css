@@ -1187,3 +1187,46 @@ html[data-motion=reduce] *,html[data-motion=reduce] *::before,html[data-motion=r
 
 .pagination { display:flex;justify-content:flex-end;align-items:center;gap:10px;padding:14px 0;flex-wrap:wrap; }
 .pagination>.muted { margin-right:auto; }
+
+/* 工作台快捷新建：沿用卡片布局与主题，内容不依赖 Jira 清单加载。 */
+.workbench-create { padding:6px 18px 18px;flex:1;min-height:0;overflow:auto;scrollbar-width:thin; }
+.workbench-create-actions { display:grid;gap:8px; }
+.workbench-create-entry { display:flex;align-items:center;gap:12px;text-align:left;padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--card);color:var(--ink);cursor:pointer;transition:background .16s,border-color .16s,transform .16s; }
+.workbench-create-entry:hover:not(:disabled) { border-color:var(--accent);background:var(--accent-soft);transform:translateX(2px); }
+.workbench-create-entry:active:not(:disabled) { transform:translateX(2px) scale(.99); }
+.workbench-create-entry:disabled { opacity:.5;cursor:not-allowed; }
+.workbench-create-entry>span:nth-child(2) { flex:1;min-width:0; }
+.workbench-create-entry strong { display:block;font-size:13px;font-weight:600; }
+.workbench-create-entry small { display:block;font-size:11px;color:var(--ink-3);margin-top:3px;line-height:1.5; }
+.workbench-create-icon { width:34px;height:34px;border-radius:10px;display:grid;place-items:center;flex:none;background:var(--accent-soft);color:var(--accent);font-size:21px; }
+.workbench-create-entry.story .workbench-create-icon { color:var(--ok);background:color-mix(in srgb,var(--ok) 12%,var(--card)); }
+.workbench-create-entry.other .workbench-create-icon { color:var(--warn);background:color-mix(in srgb,var(--warn) 12%,var(--card)); }
+.workbench-create-plus { font-size:19px;color:var(--ink-3); }
+.workbench-create-note { font-size:11px;line-height:1.6;color:var(--ink-3);margin:14px 2px 0; }
+.workbench-create-note>span { display:block; }
+.create-fields { display:contents;border:0;padding:0;margin:0;min-width:0; }
+.create-completion-settings { margin-top:6px;padding:16px;border:1px solid var(--line);border-radius:12px;background:var(--paper); }
+.create-completion-settings.enabled { border-color:color-mix(in srgb,var(--accent) 48%,var(--line));background:color-mix(in srgb,var(--accent) 4%,var(--card)); }
+.create-completion-settings>label { display:flex;gap:10px;align-items:flex-start;cursor:pointer; }
+.create-completion-settings input[type=checkbox] { margin-top:3px;accent-color:var(--accent);width:16px;height:16px;flex:none; }
+.create-completion-settings strong { font-size:13px; }
+.create-completion-settings small { display:block;font-size:12px;line-height:1.6;color:var(--ink-3);margin-top:5px; }
+.create-completion-route { margin:14px 0 0 26px;padding-top:12px;border-top:1px solid var(--line); }
+.create-completion-route p { margin:7px 0; }
+.create-completion-target { display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap;font-size:13px; }
+.create-route-preview { font-size:13px;color:var(--accent);line-height:1.8;word-break:break-word; }
+.create-completion-result { padding:20px 8px;text-align:center; }
+.create-result-mark { margin:0 auto 16px;display:grid;place-items:center;width:48px;height:48px;border-radius:16px;color:var(--accent);background:var(--accent-soft);font-size:26px; }
+.create-completion-result.done .create-result-mark { color:var(--ok);background:color-mix(in srgb,var(--ok) 12%,var(--card)); }
+.create-completion-result h3 { margin:0 0 12px; }
+.create-completion-result p { line-height:1.7;overflow-wrap:anywhere; }
+.create-result-actions { display:flex;justify-content:center;flex-wrap:wrap;gap:10px;margin-top:24px; }
+.create-resume-fields { border:0;padding:0;margin:20px 0;min-width:0;text-align:left; }
+.create-pending { padding:12px 14px;margin-bottom:16px;border:1px solid var(--line);border-radius:10px;background:var(--paper); }
+.create-pending summary { cursor:pointer;color:var(--accent);font-size:13px; }
+.create-pending-item { display:flex;align-items:center;width:100%;text-align:left;gap:10px;border:0;background:transparent;color:var(--ink);padding:12px 0;cursor:pointer;border-bottom:1px solid var(--line); }
+.create-pending-item>span { flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+.create-pending-item small { color:var(--accent);flex:none; }
+@media(prefers-reduced-motion:reduce) { .workbench-create-entry { transition:none; }.workbench-create-entry:hover:not(:disabled),.workbench-create-entry:active:not(:disabled) { transform:none; } }
+
+.create-fields>.wide { grid-column:1 / -1; }

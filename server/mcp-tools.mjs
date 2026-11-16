@@ -2,8 +2,9 @@ import { z } from 'zod';
 import { constants } from 'node:fs';
 import { open, realpath } from 'node:fs/promises';
 import path from 'node:path';
-import { planCreate, buildFields, editValue, fromJiraValue, fieldSlots, pieceValues, resolveHourFields, hoursOf, dateOf } from '../.wb-build/domain.mjs';
+import { planCreate, editValue, fromJiraValue, fieldSlots, pieceValues, resolveHourFields, hoursOf, dateOf } from '../.wb-build/domain.mjs';
 import { problem } from './mcp-store.mjs';
+import { runCompletion, validateWorkflowFields } from './completion.mjs';
 
 const text = z.string().trim().min(1).max(500);
 const key = z.string().regex(/^[A-Z][A-Z0-9]+-\d+$/);
@@ -110,18 +111,7 @@ export function createToolService({ store, jira, check }) {
     return matches[0];
   }
   function validate(meta,input,required=true) {
-    for(const [id,v] of Object.entries(input)) {
-      if(!meta[id] || ['project','issuetype','status','reporter','issuelinks','attachment'].includes(id)) throw problem('INVALID_FIELD',`字段 ${id} 不允许写入或不存在`);
-      if(meta[id].operations && !meta[id].operations.includes('set')) throw problem('INVALID_FIELD',`字段 ${id} 不允许 set`);
-      if(meta[id].allowedValues) {
-        const all=meta[id].allowedValues.flatMap(v=>[v,...(v.children??[])]).map(v=>String(v.id));
-        const parts=Array.isArray(v)?v:[v];
-        if(parts.some(x=>x && !all.includes(x))) throw problem('INVALID_FIELD',`字段 ${id} 选项不合法`,{allowedValues:meta[id].allowedValues});
-      }
-    }
-    const plan=buildFields(meta,input,['project','issuetype','issuelinks','attachment','reporter']);
-    if(required && (plan.missing.length||plan.unsupported.length)) throw problem('MISSING_FIELDS','请补充必填字段',{missing:plan.missing,unsupported:plan.unsupported,fields:meta});
-    return plan.fields;
+    return validateWorkflowFields(meta,input,required);
   }
   async function createPlan(g,a) {
     const type=await typeMeta(g,a.projectKey,a.typeName);
@@ -180,23 +170,7 @@ export function createToolService({ store, jira, check }) {
     return after;
   }
   async function complete(g,op,prefix,k,p,workDate,input={}) {
-    return locked(`issue:${k}`,async()=>{
-      for(let i=0;i<12;i++) {
-        const current=await issue(g,k);
-        if(current.fields.project?.key!==p.projectKey || current.fields.issuetype.name!==p.typeName) throw problem('POLICY_MISMATCH','完成策略与项目/问题类型不匹配');
-        if(current.fields.status.name===p.targetStatus) {
-          if(p.requireResolution && !current.fields.resolution) throw problem('RESOLUTION_REQUIRED','已到目标状态但没有解决结果');
-          return current;
-        }
-        const options=p.steps.filter(s=>s.from===current.fields.status.name);
-        if(options.length!==1) throw problem('AMBIGUOUS_TRANSITION','未找到唯一的已授权路线',{current:current.fields.status.name});
-        const s=options[0];
-        const available=await read(g,`issue/${k}/transitions?expand=transitions.fields`);
-        if(!available.transitions?.some(t=>t.id===s.transitionId && t.to.name===s.to)) throw problem('SCHEMA_CHANGED','Jira 流转路线已变化，请更新策略');
-        await transition(g,op,`${prefix}:${s.from}:${s.transitionId}`,k,s.transitionId,{...s.fields,...input},workDate);
-      }
-      throw problem('WORKFLOW_LOOP','超过12步，停止自动流转');
-    });
+    return locked(`issue:${k}`,()=>runCompletion({issueKey:k,policy:p,readIssue:key=>issue(g,key),transitions:async key=>(await read(g,`issue/${key}/transitions?expand=transitions.fields`)).transitions??[],transition:(_current,s)=>transition(g,op,`${prefix}:${s.from}:${s.transitionId}`,k,s.transitionId,{...s.fields,...input},workDate)}));
   }
   async function attachment(g,op,prefix,k,file) {
     allowKey(g,k);

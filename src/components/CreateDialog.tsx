@@ -14,6 +14,8 @@ import { AttachmentDrop, filesFromClipboard } from './AttachmentDrop';
 import { PARENT_ISSUE_TYPES } from '../lib/tree';
 import { hiddenFields, saveHiddenFields, splitFields } from '../lib/fieldPrefs';
 import { isEmpty } from '../lib/fields';
+import { CompletionResult, CompletionSettings, useCreateCompletion } from './CreateCompletion';
+import type { McpPolicy } from '../lib/mcpTypes';
 import type { Project } from '../lib/types';
 
 export interface CreateTarget {
@@ -31,9 +33,10 @@ interface Props {
   target: CreateTarget;
   onClose: () => void;
   onCreated: (keys: string[]) => void;
+  onOpenIssue?: (key: string) => void;
 }
 
-export function CreateDialog({ target: initial, onClose, onCreated }: Props) {
+export function CreateDialog({ target: initial, onClose, onCreated, onOpenIssue }: Props) {
   const { me, toast, canWriteProject } = useSession();
   const [projectKey, setProjectKey] = useState<string | null>(initial.projectKey);
   const [projects, setProjects] = useState<Project[] | null>(null);
@@ -69,7 +72,12 @@ export function CreateDialog({ target: initial, onClose, onCreated }: Props) {
   const [files, setFiles] = useState<File[]>([]);
   const [batch, setBatch] = useState(false);
   const [batchText, setBatchText] = useState('');
-  const [busy, setBusy] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const completion = useCreateCompletion(onCreated);
+  const busy = creating || completion.busy;
+  const [complete, setComplete] = useState(false);
+  const [policy, setPolicy] = useState<McpPolicy | null>(null);
+  const locked = !!completion.operation || !!completion.attempt;
   const [error, setError] = useState('');
   const [showInvalid, setShowInvalid] = useState(false);
   const [nonce, setNonce] = useState(0);
@@ -113,6 +121,7 @@ export function CreateDialog({ target: initial, onClose, onCreated }: Props) {
   }, [parentRef, target.parent]);
 
   const type = types?.find((t) => t.id === typeId) ?? null;
+  useEffect(() => { setComplete(false); setPolicy(null); }, [typeId, projectKey, batch]);
   const isParentType = !!type && PARENT_ISSUE_TYPES.includes(type.name);
   // 需求本身不挂父需求
   const effectiveParent = isParentType ? null : parentRef;
@@ -176,7 +185,19 @@ export function CreateDialog({ target: initial, onClose, onCreated }: Props) {
       setError(`请填写：${[...missingNames].join('、')}`);
       return;
     }
-    setBusy(true);
+    if (locked) return;
+    if (complete && !batch) {
+      if (!policy) { setError('请先选择当前项目、类型的完成路线'); return; }
+      setError('');
+      await completion.submit({
+        requestId: crypto.randomUUID(), projectKey: target.projectKey, typeName: type.name, policyId: policy.id,
+        values: Object.fromEntries(Object.entries(values).filter((entry): entry is [string, FormValue] => entry[1] !== undefined && !!type.fields[entry[0]])),
+        ...(effectiveParent ? { parentKey: effectiveParent.key } : {}),
+        links: links.map(({ key, option }) => ({ key, option })), files: files.map(f => ({ name: f.name, size: f.size })),
+      }, files);
+      return;
+    }
+    setCreating(true);
     setError('');
     const list = batch ? titles : [String(values.summary ?? '').trim()];
     const done: string[] = [];
@@ -195,7 +216,7 @@ export function CreateDialog({ target: initial, onClose, onCreated }: Props) {
     } catch (e) {
       setError(`${done.length ? `已创建 ${done.join('、')}；` : ''}第 ${done.length + 1} 条失败：${(e as Error).message}`);
     } finally {
-      setBusy(false);
+      setCreating(false);
     }
     if (done.length) {
       onCreated(done);
@@ -233,21 +254,24 @@ export function CreateDialog({ target: initial, onClose, onCreated }: Props) {
       busy={busy}
       width={760}
       footer={
-        type && (
+        type && !locked && (
           <>
             <span className="err" role="alert">
               {error}
             </span>
-            <button className="btn" disabled={busy} onClick={() => submit(true)}>
+            <button className="btn" disabled={busy || complete} onClick={() => submit(true)}>
               创建并继续
             </button>
-            <button className="btn primary" disabled={busy} onClick={() => submit(false)}>
-              {busy ? '创建中…' : batch ? `创建 ${titles.length} 条` : '创建'}
+            <button className="btn primary" disabled={busy || (complete && !policy)} onClick={() => submit(false)}>
+              {busy ? complete ? '创建并流转中…' : '创建中…' : batch ? `创建 ${titles.length} 条` : complete ? '创建并完成' : '创建'}
             </button>
           </>
         )
       }
     >
+      {completion.operation ? <CompletionResult key={completion.operation.id} operation={completion.operation} busy={busy} error={completion.error} onResume={completion.resume} onOpen={onOpenIssue} onClose={onClose} onEdit={completion.reset} initialFiles={files}/> : completion.attempt ? <section className="create-completion-result" role="status"><h3>正在确认上次创建的结果</h3><p>已保留请求编号。重试将使用同一编号，避免重复建单。</p><p className="err">{completion.error}</p><button className="btn primary" disabled={busy} onClick={completion.retry}>{busy ? '正在检查…' : '找回创建结果'}</button></section> : <>
+      {!completion.loading && completion.pending.length > 0 && <details className="create-pending"><summary>有 {completion.pending.length} 项创建后待完成的操作</summary>{completion.pending.map(op => <button key={op.id} className="create-pending-item" onClick={() => completion.select(op)}><strong>{op.issueKey ?? '待核实'}</strong><span>{op.summary}</span><small>继续完成 →</small></button>)}</details>}
+      {completion.error && <p className="err" role="alert">{completion.error}<button className="btn small" onClick={completion.refresh}>重新读取</button></p>}
       {!initial.projectKey && (
         <div className="field wide project-pick">
           <span className="field-label">项目</span>
@@ -258,7 +282,7 @@ export function CreateDialog({ target: initial, onClose, onCreated }: Props) {
           ) : (
             <div className="check-group" role="radiogroup" aria-label="项目">
               {projects.map((p) => (
-                <button type="button" key={p.key} role="radio" aria-checked={p.key === projectKey} aria-pressed={p.key === projectKey} className="chip" onClick={() => setProjectKey(p.key)}>
+                <button type="button" key={p.key} role="radio" aria-checked={p.key === projectKey} aria-pressed={p.key === projectKey} className="chip" disabled={busy} onClick={() => setProjectKey(p.key)}>
                   {p.name.replace(/^\d+-/, '')} <span className="mono muted">{p.key}</span>
                 </button>
               ))}
@@ -271,7 +295,8 @@ export function CreateDialog({ target: initial, onClose, onCreated }: Props) {
       {types && types.length === 0 && <p className="muted">当前账号在该项目没有可新建的问题类型</p>}
       {type && (!target.parent || parent || parentError) && (
         <form
-          className="form-grid"
+          className="form-grid create-issue-form"
+          aria-busy={busy}
           onPaste={(e) => {
             // 表单内任意位置粘贴截图/文件即加入附件；纯文本照常粘贴
             const pasted = filesFromClipboard(e);
@@ -291,6 +316,7 @@ export function CreateDialog({ target: initial, onClose, onCreated }: Props) {
             }
           }}
         >
+          <fieldset className="create-fields" disabled={busy}>
           <div className="field wide">
             <span className="field-label">类型</span>
             <div className="check-group" role="radiogroup" aria-label="问题类型">
@@ -434,9 +460,12 @@ export function CreateDialog({ target: initial, onClose, onCreated }: Props) {
             </span>
             <AttachmentDrop files={files} onChange={setFiles} disabled={busy} />
           </div>
+          <div className="wide">{batch ? <p className="muted">批量模式保留普通创建；创建并完成请使用单条模式。</p> : <CompletionSettings projectKey={target.projectKey} typeName={type.name} checked={complete} onChange={setComplete} onPolicy={setPolicy} disabled={busy}/>}</div>
           <button type="submit" hidden />
+          </fieldset>
         </form>
       )}
+      </>}
     </Modal>
   );
 }

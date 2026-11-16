@@ -11,18 +11,21 @@ import { Modal } from '../components/Modal';
 import { loadLocal, saveLocal, scopeKey, overdue, dueDate, finished } from '../lib/management';
 import { useManagementData } from '../lib/useManagementData';
 import { relativeTime } from '../lib/format';
-import { CARD_LIMIT, CARD_TEMPLATES, cardFromLegacy, cardSummary, defaultCards, isWidget, needsProjectIssues, newCard, newWidget, cardPreviewCount, selectCardIssues, validCards, validLegacyViews, type WorkCard, type WorkbenchCard } from '../lib/workCards';
-import { loadWorkbench, saveWorkbench, downloadBackup, readBackup } from '../lib/workbenchBackup';
+import { CARD_LIMIT, CARD_TEMPLATES, cardFromLegacy, cardSummary, isAction, isListCard, isWidget, needsProjectIssues, newCard, newCreateCard, newWidget, cardPreviewCount, selectCardIssues, validCards, validLegacyViews, type WorkCard, type WorkbenchCard } from '../lib/workCards';
+import { initialWorkbenchCards, saveWorkbench, downloadBackup, readBackup } from '../lib/workbenchBackup';
 import { useTools } from '../features/tools/useTools';
 import { WidgetCard } from '../features/tools/WidgetCard';
 import { CardResizeHandle } from '../features/workbench/CardResizeHandle';
 import { mergeVisibleOrder } from '../features/workbench/reorder';
 import { useWorkbenchMotion } from '../features/scene/useWorkbenchMotion';
 import { CardGrid } from '../features/workbench/CardGrid';
+import { CreateCard } from '../features/workbench/CreateCard';
+import type { CreateTarget } from '../components/CreateDialog';
 
 interface WorkbenchProps {
   projectKey: string | null;
   onOpen: (key: string) => void;
+  onCreate: (target: CreateTarget) => void;
   cardId: string | null;
   onCardChange: (id: string | null) => void;
 }
@@ -30,11 +33,10 @@ export function MyWorkView(props: WorkbenchProps) {
   const { me } = useSession();
   return <CardWorkbench key={scopeKey(me.jiraBaseUrl, me.name, props.projectKey)} {...props}/>;
 }
-function CardWorkbench({ projectKey, onOpen, cardId: allId, onCardChange }: WorkbenchProps) {
+function CardWorkbench({ projectKey, onOpen, onCreate, cardId: allId, onCardChange }: WorkbenchProps) {
   const { me, toast } = useSession();
   const store = `wb.workCards.v2:${scopeKey(me.jiraBaseUrl, me.name, null)}`;
-  const legacyStore = `wb.workCards.v1:${scopeKey(me.jiraBaseUrl, me.name, null)}`;
-  const [cards, setCards] = useState<WorkbenchCard[]>(() => loadWorkbench(me.jiraBaseUrl, me.name).cards ?? loadLocal(legacyStore, defaultCards(), validCards));
+  const [cards, setCards] = useState<WorkbenchCard[]>(() => initialWorkbenchCards(me.jiraBaseUrl, me.name));
   const tools = useTools();
   const [library, setLibrary] = useState(false);
   const [editor, setEditor] = useState<WorkCard | null>(null);
@@ -67,7 +69,7 @@ function CardWorkbench({ projectKey, onOpen, cardId: allId, onCardChange }: Work
 
   const visibleCards = useMemo(() => cards.filter(c => !c.hidden), [cards]);
   const hiddenCards = cards.filter(c => 'hidden' in c && c.hidden);
-  const all = cards.find(c => c.id === allId);
+  const all = cards.find(c => c.id === allId && isListCard(c));
   function persist(next: WorkbenchCard[], message?: string) {
     if (!validCards(next)) { toast('卡片设置未通过校验，请检查后重试', 'error'); return false; }
     if (!saveLocal(store, next)) { toast('无法保存卡片设置，请检查本机存储空间后重试', 'error'); return false; }
@@ -133,11 +135,11 @@ function CardWorkbench({ projectKey, onOpen, cardId: allId, onCardChange }: Work
     onCardChange(id);
   }
   const hf = data.data?.hourFields;
-  const lists = useMemo(() => new Map(cards.filter(c => !isWidget(c)).map(c => [c.id, hf ? selectCardIssues(issues, c as WorkCard, hf, me.name) : []])), [cards, data.data?.issues, hf, me.name]);
+  const lists = useMemo(() => new Map(cards.filter(isListCard).map(c => [c.id, hf ? selectCardIssues(issues, c, hf, me.name) : []])), [cards, data.data?.issues, hf, me.name]);
   const listFor = (c: WorkCard) => lists.get(c.id) ?? [];
   return <div className="card-workbench" ref={rootRef}><p id="workbench-drag-help" className="sr-only">按住标题拖动排序，松手保存；按空格或回车抓取卡片，方向键选择位置，再按空格或回车放下；Esc 取消。</p><span className="sr-only" role="status" aria-live="polite"></span>
     {all && <nav className="workbench-list-nav" aria-label="卡片列表导航"><button className="workbench-back" onClick={() => onCardChange(null)}>←<span>返回工作台</span></button></nav>}
-    <div className="workspace-intro"><div><h2>{all && !isWidget(all) ? all.title : '把常看的任务清单，贴在这里。'}</h2><p>{all && !isWidget(all) ? cardSummary(all) : '按住标题拖动排序，其他卡片自动让位；拖右下角调整大小，松手自动保存。'}</p></div><div className="workbench-actions">
+    <div className="workspace-intro"><div><h2>{all && isListCard(all) ? all.title : '把常看的任务清单，贴在这里。'}</h2><p>{all && isListCard(all) ? cardSummary(all) : '按住标题拖动排序，其他卡片自动让位；拖右下角调整大小，松手自动保存。'}</p></div><div className="workbench-actions">
       <button className="btn" disabled={data.loading} onClick={data.reload}>{data.loading ? '刷新中…' : '刷新'}</button>
       {!all && <><button className="btn" onClick={() => setHiddenOpen(true)}>管理卡片{hiddenCards.length ? `（${hiddenCards.length}）` : ''}</button><button className="btn primary" disabled={atLimit} onClick={() => setLibrary(true)}>＋ 添加卡片</button></>}
     </div></div>
@@ -148,34 +150,36 @@ function CardWorkbench({ projectKey, onOpen, cardId: allId, onCardChange }: Work
     {data.data?.error && <div className="management-notice" role="alert">{data.data.error.message} 当前结果可能不完整或不是最新，统计与导出以页面显示范围为准。<button className="btn small" onClick={data.reload}>重试同步</button></div>}
     {data.data && !data.data.backgroundLoading && data.data.total > issues.length && <div className="management-notice" role="status">共 {data.data.total} 项，当前仅加载前 {issues.length} 项；卡片数量、筛选与导出基于已加载结果。请在左上角选择具体项目缩小范围。</div>}
     {all && !data.data && !data.error && <Loading rows={6}/>}
-    {all && !isWidget(all) && data.data && <>
+    {all && isListCard(all) && data.data && <>
       {all.view === 'blocked' && <div className="management-notice">仅显示未完成的入向 Blocks 依赖；需求下子项的父子链接不视为阻塞。</div>}
       {all.view === 'missing' && <div className="management-notice">检查开发人员、开发预估时间、开发完成/解决日期；未结束任务也可能缺完成日期。</div>}
       <ManagementTable key={all.id} issues={data.data?.error ? [] : listFor(all)} onOpen={onOpen} scope={`work-card:${projectKey ?? '*'}:${all.id}`} onChanged={data.reload}/>
     </>}
     <div hidden={!!all}><div className="workbench-grid-wrap"><CardGrid cards={visibleCards} onReorder={ids => persist(mergeVisibleOrder(cards, ids), '卡片位置已保存')} reduced={reducedMotion}>{(c, index, _active, handle, overlay) => {
         const widget = isWidget(c);
-        const list = widget ? [] : listFor(c);
-        const shown = widget ? 0 : cardPreviewCount(c);
-        const visible = widget ? [] : list.slice(0, shown);
-        return <><section className={`workbench-card-inner${widget ? ' widget-card' : ''}${c.width === 4 ? ' wide' : ''}${c.height ? ' fixed-height' : ''}`} key={c.id} aria-label={c.title} style={{ height: c.height }}>
+        const listCard = isListCard(c);
+        const list = listCard ? listFor(c) : [];
+        const shown = listCard ? cardPreviewCount(c) : 0;
+        const visible = list.slice(0, shown);
+        return <><section className={`workbench-card-inner${widget ? ' widget-card' : isAction(c) ? ' create-action-card' : ''}${c.width === 4 ? ' wide' : ''}${c.height ? ' fixed-height' : ''}`} key={c.id} aria-label={c.title} style={{ height: c.height }}>
           <header {...handle.attributes} {...handle.listeners} ref={handle.ref} className={`workbench-card-head accent-${index % 4}`} tabIndex={0}>
-            <div><h3>{c.title}{!widget && <span className="workbench-count">{list.length}</span>}{!widget && c.custom && <span className="workbench-custom">自定义</span>}{widget && <span className="workbench-custom">本机组件</span>}</h3><p>{widget ? (c.widget === 'notes' ? '临时想法与提醒，仅保存在本机' : '个人清单，不创建 Jira 任务') : cardSummary(c)}</p></div>
+            <div><h3>{c.title}{listCard && <span className="workbench-count">{list.length}</span>}{listCard && c.custom && <span className="workbench-custom">自定义</span>}{widget && <span className="workbench-custom">本机组件</span>}</h3><p>{widget ? (c.widget === 'notes' ? '临时想法与提醒，仅保存在本机' : '个人清单，不创建 Jira 任务') : listCard ? cardSummary(c) : '从一个想法，到一项完成的工作'}</p></div>
             <div className="workbench-menu" data-no-drag hidden={overlay} onPointerDown={event => event.stopPropagation()}><button className="btn small ghost workbench-more" aria-label={`更多操作：${c.title}`} aria-expanded={menu === c.id} aria-haspopup="menu" onClick={() => setMenu(menu === c.id ? null : c.id)}>•••</button>{menu === c.id && <div className="workbench-menu-list" role="menu">
-              {!widget && <button role="menuitem" onClick={() => { setEditor(c); setMenu(null); }}>编辑条件</button>}
+              {listCard && <button role="menuitem" onClick={() => { setEditor(c); setMenu(null); }}>编辑条件</button>}
               {c.height && <button role="menuitem" onClick={() => { persist(cards.map(x => x.id === c.id ? { ...x, height: undefined } : x)); setMenu(null); }}>恢复自动高度</button>}
               <button role="menuitem" onClick={() => changeHidden(c.id, true)}>隐藏卡片</button>
               <button role="menuitem" className="danger" onClick={() => { setRemoving(c); setMenu(null); }}>删除卡片</button>
             </div>}</div>
           </header>
-          {widget ? <WidgetCard kind={c.widget} data={tools.data} save={tools.save}/> : !data.data ? <div className="workbench-card-items">{data.error ? <p className="muted">数据读取失败，请重试同步</p> : <Loading rows={3}/>}</div> : <>
+          {isAction(c) ? <CreateCard projectKey={projectKey} onCreate={onCreate}/> : widget ? <WidgetCard kind={c.widget} data={tools.data} save={tools.save}/> : !data.data ? <div className="workbench-card-items">{data.error ? <p className="muted">数据读取失败，请重试同步</p> : <Loading rows={3}/>}</div> : <>
           <div className="workbench-card-items">{visible.map(i => <div className="workbench-task" key={i.key}><button className="workbench-task-open" onClick={() => onOpen(i.key)}><span className="workbench-task-title"><TypeBadge type={i.fields.issuetype.name}/><span>{i.fields.summary}</span></span><span className="workbench-task-meta"><span className="mono">{i.key}</span><StatusPill status={i.fields.status.name}/>{dueDate(i) && !finished(i) ? <span className={overdue(i) ? 'err' : ''}>{overdue(i) ? '已逾期 · ' : '到期 '}{dueDate(i)}</span> : <span>{relativeTime(i.fields.updated)}</span>}</span></button><CopyIssueButton issueKey={i.key} summary={i.fields.summary} className="workbench-copy"/></div>)}{!list.length && <div className="workbench-empty"><span aria-hidden="true">✓</span> 当前清单已清空</div>}</div>
           <footer className="workbench-card-foot"><span>显示 {visible.length} / {list.length} 条</span><div><button className="btn small ghost" data-card-open={c.id} onClick={() => openCard(c.id)}>查看全部 →</button></div></footer></>}
           <CardResizeHandle card={c} onResize={(width, height) => persist(cards.map(x => x.id === c.id ? { ...x, width, height } : x))}/>
         </section></>;
-    }}</CardGrid><button className="workbench-add" disabled={atLimit} onClick={() => setLibrary(true)}><strong>＋ 再贴一张卡片</strong><span>{atLimit ? `已达 ${CARD_LIMIT} 张上限` : 'Jira 清单 / 本机便签 / 个人待办'}</span></button></div></div>
+    }}</CardGrid><button className="workbench-add" disabled={atLimit} onClick={() => setLibrary(true)}><strong>＋ 再贴一张卡片</strong><span>{atLimit ? `已达 ${CARD_LIMIT} 张上限` : '快捷新建 / Jira 清单 / 本机组件'}</span></button></div></div>
     {library && <Modal title="添加到工作台" onClose={() => setLibrary(false)} width={740}>
-      <h4 className="workbench-library-heading">Jira 任务清单</h4>
+      <h4 className="workbench-library-heading">快捷操作</h4><div className="workbench-library"><button className="workbench-template" onClick={() => { if (persist([...cards, newCreateCard()])) setLibrary(false); }}><strong>＋ 新建工作项</strong><span>需求、任务、其他任务；已完成工作可直接流转</span></button></div>
+      <h4>Jira 任务清单</h4>
       <div className="workbench-library">{CARD_TEMPLATES.map(t => <button key={t.name} className="workbench-template" onClick={() => { if (persist([...cards, newCard({ ...t.patch, title: t.name, custom: false })])) setLibrary(false); }}><strong>{t.name}</strong><span>{t.hint}</span></button>)}<button className="workbench-template custom" onClick={() => { setLibrary(false); setEditor(newCard()); }}><strong>＋ 自定义筛选卡片</strong><span>选择人员、类型、状态、版本和日期等条件</span></button></div>
       <h4>本机功能卡片</h4><div className="workbench-library"><button className="workbench-template" onClick={() => { if (persist([...cards, newWidget('notes')])) setLibrary(false); }}><strong>便签</strong><span>多条便签、颜色与置顶；不写 Jira</span></button><button className="workbench-template" onClick={() => { if (persist([...cards, newWidget('todos')])) setLibrary(false); }}><strong>个人待办</strong><span>本机清单、勾选完成；不写 Jira</span></button></div>
       <h4>从已保存的工作视图添加</h4>{savedViews.length ? <div className="workbench-library">{savedViews.map(v => <button key={v.id} className="workbench-template" onClick={() => { if (persist([...cards, cardFromLegacy(v)])) setLibrary(false); }}><strong>{v.name}</strong><span>沿用原工作台保存的条件</span></button>)}</div> : <p className="muted">当前项目没有旧版已保存工作视图。你可以新建自定义卡片，条件会随卡片保存。</p>}
@@ -184,8 +188,8 @@ function CardWorkbench({ projectKey, onOpen, cardId: allId, onCardChange }: Work
     {removing && <Modal title="删除本机卡片" onClose={() => setRemoving(null)} footer={<><button className="btn" onClick={() => setRemoving(null)}>取消</button><button className="btn danger-btn" onClick={removeCard}>删除卡片</button></>}><p>确定删除「{removing.title}」吗？仅删除本机卡片和布局，不会修改或删除 Jira 问题。删除后可立即撤销。</p></Modal>}
     {hiddenOpen && <Modal title="管理工作台卡片" onClose={() => setHiddenOpen(false)} width={700} footer={<><button className="btn" onClick={() => downloadBackup(cards, tools.data)}>导出备份</button><button className="btn" disabled={importing} onClick={() => importRef.current?.click()}>{importing ? '正在导入…' : '导入备份'}</button><input ref={importRef} className="sr-only" type="file" accept=".json,application/json" aria-label="选择工作台备份" onChange={e => importBackup(e.target.files?.[0])}/><button className="btn primary" onClick={() => setHiddenOpen(false)}>完成</button></>}>
       <p className="muted">隐藏只影响首页显示，仍保留筛选和布局。导入会替换当前账号的本机卡片、便签与待办，不包含 Jira 任务或登录信息。</p>
-      <h4>显示中（{visibleCards.length}）</h4><div className="workbench-manage-list">{visibleCards.map(c => <div key={c.id}><span>{c.title}<small>{isWidget(c) ? '本机组件' : 'Jira 清单'}</small></span><button className="btn small" onClick={() => changeHidden(c.id, true)}>隐藏</button></div>)}</div>
-      <h4>已隐藏（{hiddenCards.length}）</h4>{hiddenCards.length ? <div className="workbench-manage-list">{hiddenCards.map(c => <div key={c.id}><span>{c.title}<small>{isWidget(c) ? '本机组件' : 'Jira 清单'}</small></span><button className="btn small" onClick={() => changeHidden(c.id, false)}>恢复显示</button></div>)}</div> : <p className="muted">暂无隐藏卡片</p>}
+      <h4>显示中（{visibleCards.length}）</h4><div className="workbench-manage-list">{visibleCards.map(c => <div key={c.id}><span>{c.title}<small>{isWidget(c) ? '本机组件' : isAction(c) ? '快捷操作' : 'Jira 清单'}</small></span><button className="btn small" onClick={() => changeHidden(c.id, true)}>隐藏</button></div>)}</div>
+      <h4>已隐藏（{hiddenCards.length}）</h4>{hiddenCards.length ? <div className="workbench-manage-list">{hiddenCards.map(c => <div key={c.id}><span>{c.title}<small>{isWidget(c) ? '本机组件' : isAction(c) ? '快捷操作' : 'Jira 清单'}</small></span><button className="btn small" onClick={() => changeHidden(c.id, false)}>恢复显示</button></div>)}</div> : <p className="muted">暂无隐藏卡片</p>}
     </Modal>}
     {undo && <div className="workbench-undo" role="status"><span>已删除「{undo.card.title}」</span><button className="btn small" onClick={restoreUndo}>撤销</button><button className="btn small ghost" aria-label="关闭撤销提示" onClick={() => { clearTimeout(undoTimer.current); setUndo(null); }}>×</button></div>}
   </div>;

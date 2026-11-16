@@ -1,9 +1,10 @@
 import type { McpGrant, McpPolicy, McpStatus } from './mcpTypes';
 import { trackRequest } from './requestActivity';
 import type { Attachment, FieldDef, Issue, IssueDetail, JiraUser, Project, ProjectDetail, SearchResult, NamedRef } from './types';
-import type { FieldMetaMap } from './fields';
+import type { FieldMetaMap, FormValue } from './fields';
 import type { LinkTypeDef } from './links';
 import type { LlmTask } from './dailyImport';
+import type { CreateCompleteInput, WorkflowOperation } from './workflow';
 
 export class ApiError extends Error {
   constructor(
@@ -151,6 +152,18 @@ export interface Transition {
 const enc = encodeURIComponent;
 
 export const api = {
+  workflowPolicies: () => request<{ policies: McpPolicy[] }>('GET', '/api/workflow/policies', undefined, undefined, { feedback: 'local' }),
+  saveWorkflowPolicies: (policies: McpPolicy[]) => request<{ policies: McpPolicy[] }>('PUT', '/api/workflow/policies', policies),
+  workflowOperations: () => request<WorkflowOperation[]>('GET', '/api/workflow/operations', undefined, undefined, { feedback: 'local' }),
+  createComplete: (input: CreateCompleteInput) => writeOnce(`workflow:${input.requestId}`, () => request<WorkflowOperation>('POST', '/api/workflow/operations', input)),
+  resumeWorkflow: (id: string, fields: Record<string, FormValue> = {}, policyId?: string) => writeOnce(`workflow-resume:${id}`, () => request<WorkflowOperation>('POST', `/api/workflow/operations/${enc(id)}/resume`, { fields, policyId })),
+  uploadWorkflowFiles: (id: string, files: File[]) => writeOnce(`workflow-upload:${id}`, () => trackRequest(async () => {
+    const body = new FormData(); files.forEach(f => body.append('file', f, f.name));
+    const res = await fetch(`/api/workflow/operations/${enc(id)}/attachments`, { method: 'POST', credentials: 'same-origin', body });
+    const data = await res.json().catch(() => null);
+    if (!res.ok) { if (res.status === 401) { window.dispatchEvent(new Event('wb-session-ended')); onUnauthorized?.(); } throw new ApiError(res.status, messageOf(data, res.status)); }
+    return data as WorkflowOperation;
+  }, true)),
   checkMcp: () => request<{enabled:boolean;user:string;tools:number;url:string}>('POST', '/api/mcp/check', {}),
   mcpStatus: () => request<McpStatus>('GET', '/api/mcp/status'),
   saveMcpSettings: (s: { enabled: boolean; policies: McpPolicy[] }) => request<McpStatus>('PUT', '/api/mcp/settings', s),

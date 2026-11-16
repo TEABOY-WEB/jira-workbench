@@ -48,9 +48,13 @@ export function defaultCards(): WorkCard[] {
 export interface Note { id: string; text: string; color: 'yellow' | 'blue' | 'green'; pinned: boolean; updated: string }
 export interface Todo { id: string; text: string; done: boolean; created: string; completed?: string }
 export type WidgetKind = 'notes' | 'todos';
-export type WorkbenchCard = WorkCard | { kind: 'widget'; widget: WidgetKind; id: string; title: string; width: CardWidth; height?: number; hidden?: boolean };
+export type WorkbenchCard = WorkCard | { kind: 'widget'; widget: WidgetKind; id: string; title: string; width: CardWidth; height?: number; hidden?: boolean }
+  | { kind: 'action'; action: 'create'; id: string; title: string; width: CardWidth; height?: number; hidden?: boolean };
+export function newCreateCard(): WorkbenchCard { return { kind: 'action', action: 'create', id: crypto.randomUUID(), title: '新建工作项', width: 2 }; }
 export function newWidget(widget: WidgetKind): WorkbenchCard { return { kind: 'widget', widget, id: crypto.randomUUID(), title: widget === 'notes' ? '便签' : '个人待办', width: 1 }; }
 export const isWidget = (c: WorkbenchCard): c is Extract<WorkbenchCard, { kind: 'widget' }> => (c as { kind?: string }).kind === 'widget';
+export const isAction = (c: WorkbenchCard): c is Extract<WorkbenchCard, { kind: 'action' }> => (c as { kind?: string }).kind === 'action';
+export const isListCard = (c: WorkbenchCard): c is WorkCard => !isWidget(c) && !isAction(c);
 export function validWidget(c: unknown): boolean {
   if (!c || typeof c !== 'object') return false;
   const w = c as Record<string, unknown>;
@@ -64,6 +68,9 @@ export function validCards(value: unknown): value is WorkbenchCard[] {
     if (!c || typeof c !== 'object' || typeof c.id !== 'string' || !c.id || ids.has(c.id)) return false;
     ids.add(c.id);
     if (isWidget(c)) return validWidget(c);
+    if (isAction(c)) return c.action === 'create' && typeof c.title === 'string' && !!c.title.trim() && c.title.length <= 40
+      && CARD_WIDTHS.includes(c.width) && (c.height === undefined || typeof c.height === 'number' && c.height >= 200 && c.height <= 900) && (c.hidden === undefined || typeof c.hidden === 'boolean');
+    if ('kind' in c) return false;
     return typeof c.title === 'string' && !!c.title.trim() && c.title.length <= 40
       && Object.hasOwn(RELATIONS, c.relation)
       && Array.isArray(c.stages) && c.stages.every((s: unknown) => STAGES.some(stage => stage.id === s))
@@ -104,7 +111,7 @@ export function cardSummary(c: WorkCard): string {
     c.dueFrom ? `到期 ≥ ${c.dueFrom}` : '', c.dueTo ? `到期 ≤ ${c.dueTo}` : '',
   ].filter(Boolean).join(' · ');
 }
-export function needsProjectIssues(cards: WorkbenchCard[]): boolean { return cards.some(c => !isWidget(c) && c.relation === 'all'); }
+export function needsProjectIssues(cards: WorkbenchCard[]): boolean { return cards.some(c => isListCard(c) && c.relation === 'all'); }
 export function cardPreviewCount(card: WorkCard): number {
   return card.height ? Math.max(1, Math.min(card.limit, Math.floor((card.height - 96) / 64))) : card.limit;
 }

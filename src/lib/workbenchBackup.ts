@@ -1,5 +1,5 @@
 import { loadLocal, saveLocal, scopeKey } from './management';
-import { validCards, type WorkbenchCard } from './workCards';
+import { CARD_LIMIT, defaultCards, isAction, newCreateCard, validCards, type WorkbenchCard } from './workCards';
 import { defaultTools, validTools, type ToolData } from '../features/tools/model';
 
 /** 本机工作台备份：仅保存个人布局和工具内容，不包含 Jira 会话、任务内容或密码。 */
@@ -10,6 +10,17 @@ export function loadWorkbench(baseUrl: string, user: string): { cards: Workbench
     cards: loadLocal<WorkbenchCard[] | null>(`wb.workCards.v2:${scope}`, null, (v): v is WorkbenchCard[] | null => validCards(v)),
     tools: loadLocal(`wb.tools.v1:${scope}`, defaultTools(), validTools),
   };
+}
+/** 一次性加入快捷新建卡；先落盘布局再记迁移，删除或导入后不再自动补回。 */
+export function initialWorkbenchCards(baseUrl: string, user: string): WorkbenchCard[] {
+  const scope = scopeKey(baseUrl, user, null);
+  const key = `wb.workCards.v2:${scope}`;
+  const migrated = `wb.createCard.v1:${scope}`;
+  const cards = loadWorkbench(baseUrl, user).cards ?? loadLocal(`wb.workCards.v1:${scope}`, defaultCards(), validCards);
+  if (loadLocal(migrated, false, (v): v is boolean => typeof v === 'boolean')) return cards;
+  const next = cards.some(isAction) || cards.length >= CARD_LIMIT ? cards : [newCreateCard(), ...cards];
+  if (saveLocal(key, next)) saveLocal(migrated, true);
+  return next;
 }
 export function makeBackup(cards: WorkbenchCard[], tools: ToolData): WorkbenchBackup { return { format: 'jira-workbench-backup', version: 1, cards, tools }; }
 export function validBackup(value: unknown): value is WorkbenchBackup {

@@ -525,6 +525,7 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || HOST}`);
   try {
     if (url.pathname === '/mcp') return await mcp.handle(req, res);
+    if (url.pathname.startsWith('/api/workflow/')) return await mcp.web(req, res, url, getSession(req));
     if (url.pathname.startsWith('/api/mcp/')) return await mcp.manage(req, res, url, getSession(req));
     if (url.pathname === '/api/login' && req.method === 'POST') return await handleLogin(req, res);
     if (url.pathname === '/api/login/remembered' && ['GET', 'DELETE'].includes(req.method)) return handleRememberedLogin(req, res);

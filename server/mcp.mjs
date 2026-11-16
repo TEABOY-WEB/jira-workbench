@@ -2,9 +2,10 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
 import { realpath } from 'node:fs/promises';
-import { createMcpStore, problem } from './mcp-store.mjs';
+import { createMcpStore, digest, problem } from './mcp-store.mjs';
 import { createToolService, toolDefinitions, policySchema, errorBody } from './mcp-tools.mjs';
 import { isLocalRequest } from './settings.mjs';
+import { createWebWorkflow } from './web-workflow.mjs';
 
 const grantInput=z.object({name:z.string().trim().min(1).max(80),projects:z.array(z.string().regex(/^[A-Z][A-Z0-9]+$/)).min(1).max(50),access:z.enum(['read','write']),attachmentRoots:z.array(z.string().min(1).max(2000)).max(10).default([])}).strict();
 const settingsInput=z.object({enabled:z.boolean(),policies:z.array(policySchema).max(100)}).strict().superRefine((v,ctx)=>{
@@ -13,7 +14,15 @@ const settingsInput=z.object({enabled:z.boolean(),policies:z.array(policySchema)
 });
 const publicGrant=({sid,baseUrl,...g})=>g;
 export function createMcpFeature({dir,jira,getSession,getBaseUrl,getWritePolicy,readBody,sendJson}) {
-  const store=createMcpStore(dir);
+  const rawStore=createMcpStore(dir);
+  const initial=rawStore.config();
+  if(!initial.policySets)rawStore.saveConfig({...initial,policySets:{[digest(getBaseUrl())]:initial.policies}});
+  // 完成路线随 Jira 地址隔离；沿用旧规则到当前地址，切换来源不会误用同名项目。
+  const store={
+    ...rawStore,
+    config:()=>{const c=rawStore.config();return {enabled:c.enabled,policies:c.policySets[digest(getBaseUrl())]??[]};},
+    saveConfig:c=>{const old=rawStore.config();rawStore.saveConfig({...old,enabled:c.enabled,policies:c.policies,policySets:{...old.policySets,[digest(getBaseUrl())]:c.policies}});},
+  };
   const active=new Set();
   const config=()=>store.config();
   function check(g,write=false) {
@@ -30,6 +39,7 @@ export function createMcpFeature({dir,jira,getSession,getBaseUrl,getWritePolicy,
     check(g,method!=='GET');
     const session=getSession(g.sid);return jira(session,method,sub,body,g);
   }});
+  const web = createWebWorkflow({store,jira,getSession,getBaseUrl,getWritePolicy,readBody,sendJson});
   const parse=async(req)=>{try{return JSON.parse((await readBody(req)).toString('utf8'));}catch{throw problem('INVALID_INPUT','请求不是合法 JSON');}};
   function replyError(res,e) {const status=e instanceof z.ZodError?400:e.code==='AUTH_REQUIRED'?401:e.code==='MCP_DISABLED'?503:403;sendJson(res,status,{errorMessages:[e instanceof z.ZodError?e.issues.map(i=>`${i.path.join('.')}: ${i.message}`).join('；'):e.message],code:e.code||'INVALID_INPUT'});}
   function visible(user){return store.grants().filter(g=>g.user===user && g.baseUrl===getBaseUrl());}
@@ -38,7 +48,8 @@ export function createMcpFeature({dir,jira,getSession,getBaseUrl,getWritePolicy,
     return {...c,url:`http://${req.headers.host}/mcp`,running:tools.running(),activeRequests:active.size,persistent:!!dir,grants:grants.map(g=>({...publicGrant(g),connected:!!getSession(g.sid)})),operations:grants.flatMap(g=>store.operations(g.id).map(op=>({id:op.id,grantId:op.grantId,agentName:g.name,tool:op.tool,state:op.state,createdAt:op.createdAt,updatedAt:op.updatedAt,error:op.error,result:op.result,results:op.results}))).sort((a,b)=>b.createdAt.localeCompare(a.createdAt)).slice(0,100)};
   }
   return {
-    async close(){await tools.drain();for(const transport of active)await transport.close();active.clear();store.close();},
+    async close(){await Promise.all([tools.drain(),web.drain()]);for(const transport of active)await transport.close();active.clear();store.close();},
+    web: web.handle,
     async manage(req,res,url,session) {
       if(!isLocalRequest(req.headers))return sendJson(res,403,{errorMessages:['只允许本机同源管理 MCP']});
       if(!session)return sendJson(res,401,{errorMessages:['请先登录工作台']});
